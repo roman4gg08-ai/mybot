@@ -14,7 +14,7 @@ OWNER_IDS = {
 }
 API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL = os.getenv("AI_MODEL", "gemini-1.5-flash")
-COOLDOWN = 6 * 3600
+COOLDOWN = 5
 AI_LIMIT_PER_HOUR = 8
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 os.makedirs(DATA_DIR, exist_ok=True)
