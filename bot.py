@@ -23,7 +23,7 @@ FILE = os.path.join(DATA_DIR, "settings.json")
 DEFAULTS = {
     "enabled": True,
     "notify": True,
-    "ai": True,                # <--- ИСПРАВЛЕНО: включено по умолчанию!
+    "ai": True,  # ИИ включен по умолчанию
     "start": 0,
     "end": 24,
     "tz": "Europe/Moscow",
@@ -95,26 +95,34 @@ async def ask_ai(key, text):
     del h[:-10]
     while h and h[0]["role"] != "user":
         h.pop(0)
+        
     payload = {
         "systemInstruction": {"parts": [{"text": S["prompt"]}]},
         "contents": h,
         "generationConfig": {"maxOutputTokens": 1000},
     }
+    
+    # Передаем ключ в URL для максимальной надежности запроса к Gemini
     url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{MODEL}:generateContent"
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MODEL}:generateContent?key={API_KEY}"
     )
-    headers = {"x-goog-api-key": API_KEY, "Content-Type": "application/json"}
+    
+    headers = {"Content-Type": "application/json"}
     timeout = aiohttp.ClientTimeout(total=40)
+    
     async with aiohttp.ClientSession(timeout=timeout) as s:
         async with s.post(url, json=payload, headers=headers) as r:
             data = await r.json()
             if r.status != 200:
+                print("❌ Подробности ошибки от Google API:", data)
                 raise RuntimeError(str(data)[:300])
+                
     parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
     reply = "".join(p.get("text", "") for p in parts).strip()
     if not reply:
         raise RuntimeError("empty reply: " + str(data)[:300])
+        
     h.append({"role": "model", "parts": [{"text": reply}]})
     return reply
 
@@ -128,7 +136,7 @@ async def cmd_help(m: Message):
         await m.answer("Узнай свой ID командой /myid")
         return
     await m.answer(
-        "/time 0 7 — часы ответа\n"
+        "/time 0 24 — часы ответа\n"
         "/text Текст — фиксированное сообщение\n"
         "/ai on, /ai off — умные ответы через ИИ\n"
         "/prompt Текст — инструкции для ИИ\n"
@@ -162,7 +170,7 @@ async def cmd_time(m: Message, command: CommandObject):
         a, b = map(int, command.args.split())
         assert 0 <= a <= 23 and 0 <= b <= 24 and a != b
     except Exception:
-        await m.answer("Формат: /time 0 7 (часы 0-23, конец 0-24, начало не равно концу)")
+        await m.answer("Формат: /time 0 24 (часы 0-23, конец 0-24, начало не равно концу)")
         return
     S["start"], S["end"] = a, b
     save()
@@ -220,86 +228,5 @@ async def cmd_off(m: Message):
         await m.answer("Автоответ выключен")
 
 @dp.message(Command("notify"))
-async def cmd_notify(m: Message, command: CommandObject):
-    if not is_owner(m):
-        return
-    arg = (command.args or "").strip().lower()
-    if arg not in ("on", "off"):
-        await m.answer("Формат: /notify on или /notify off")
-        return
-    S["notify"] = arg == "on"
-    save()
-    await m.answer("Уведомления " + ("включены" if S["notify"] else "выключены"))
-
-@dp.message(Command("tz"))
-async def cmd_tz(m: Message, command: CommandObject):
-    if not is_owner(m):
-        return
-    try:
-        ZoneInfo(command.args.strip())
-    except Exception:
-        await m.answer("Формат: /tz Europe/Moscow")
-        return
-    S["tz"] = command.args.strip()
-    save()
-    await m.answer(f"Часовой пояс: {S['tz']}")
-
-@dp.business_message()
-async def auto_reply(m: Message):
-    if not m.from_user:
-        return
-    acc = await owner_id(m.business_connection_id)
-    if m.from_user.id == acc:
-        return
-    if not S["enabled"] or not is_away():
-        return
-
-    key = (m.business_connection_id, m.chat.id)
-    now = time.time()
-    user_text = m.text or m.caption
-    reply, used_ai = None, False
-
-    if S["ai"] and API_KEY and user_text:
-        times = [t for t in ai_times.get(key, []) if now - t < 3600]
-        if len(times) < AI_LIMIT_PER_HOUR:
-            try:
-                reply = await ask_ai(key, user_text)
-                used_ai = True
-                times.append(now)
-            except Exception as e:
-                print("❌ ОШИБКА ИИ:", e)  # Более заметный вывод ошибки в консоль
-        ai_times[key] = times
-        if reply is None and len(times) >= AI_LIMIT_PER_HOUR:
-            return
-
-    if reply is None:
-        if now - last_reply.get(key, 0) < COOLDOWN:
-            return
-        last_reply[key] = now
-        reply = S["text"]
-
-    await bot.send_message(
-        chat_id=m.chat.id,
-        text=reply,
-        business_connection_id=m.business_connection_id,
-    )
-
-    if S["notify"]:
-        try:
-            u = m.from_user
-            who = u.full_name + (f" (@{u.username})" if u.username else "")
-            note = (
-                f"Тебе написал {who}.\n\n"
-                f"Сообщение: {describe(m)}\n\n"
-                f"Ответ{' ИИ' if used_ai else ''}: {reply}"
-            )
-            await bot.send_message(acc, note[:4000])
-        except Exception as e:
-            print("notify error:", e)
-
-async def main():
-    print("Bot is running...")
-    await dp.start_polling(bot)
-
-asyncio.run(main())
+async def cmd_notify(
     
