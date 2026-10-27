@@ -2,7 +2,7 @@ import asyncio, json, os, time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
@@ -22,6 +22,22 @@ DEFAULTS = {
     "end": 7,
     "tz": "Europe/Moscow",
     "text": "Привет! Это помощник rgm, он сейчас не может ответить",
+}
+TYPES = {
+    "photo": "фото",
+    "voice": "голосовое",
+    "video_note": "кружок",
+    "video": "видео",
+    "sticker": "стикер",
+    "animation": "GIF",
+    "document": "файл",
+    "audio": "аудио",
+    "location": "геолокация",
+    "venue": "место",
+    "contact": "контакт",
+    "poll": "опрос",
+    "dice": "кубик",
+    "story": "история",
 }
 
 def load():
@@ -55,6 +71,16 @@ async def owner_id(conn_id):
         c = await bot.get_business_connection(conn_id)
         owners[conn_id] = c.user.id
     return owners[conn_id]
+
+def describe(m: Message):
+    ctype = str(getattr(m.content_type, "value", m.content_type))
+    body = m.text or m.caption or ""
+    if len(body) > 300:
+        body = body[:300] + "…"
+    if ctype == "text":
+        return body
+    label = TYPES.get(ctype, ctype)
+    return f"[{label}] {body}".strip()
 
 @dp.message(Command("myid"))
 async def cmd_myid(m: Message):
@@ -150,8 +176,10 @@ async def cmd_tz(m: Message, command: CommandObject):
     save()
     await m.answer(f"Часовой пояс: {S['tz']}")
 
-@dp.business_message(F.text)
+@dp.business_message()
 async def auto_reply(m: Message):
+    if not m.from_user:
+        return
     acc = await owner_id(m.business_connection_id)
     if m.from_user.id == acc:
         return
@@ -171,12 +199,11 @@ async def auto_reply(m: Message):
         try:
             u = m.from_user
             who = u.full_name + (f" (@{u.username})" if u.username else "")
-            snippet = m.text if len(m.text) <= 300 else m.text[:300] + "…"
             await bot.send_message(
                 acc,
                 f"Тебе написал {who}.\n"
                 f"Я ответил за тебя.\n\n"
-                f"Сообщение: {snippet}",
+                f"Сообщение: {describe(m)}",
             )
         except Exception as e:
             print("notify error:", e)
