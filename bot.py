@@ -13,7 +13,7 @@ OWNER_IDS = {
     int(x) for x in os.getenv("OWNER_ID", "0").replace(" ", "").split(",") if x
 }
 API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL = os.getenv("AI_MODEL", "gemini-3.5-flash")
+MODEL = os.getenv("AI_MODEL", "gemini-1.5-flash")
 COOLDOWN = 6 * 3600
 AI_LIMIT_PER_HOUR = 8
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
