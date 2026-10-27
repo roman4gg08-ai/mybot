@@ -23,7 +23,7 @@ DEFAULTS = {
     "enabled": True,
     "notify": True,
     "ai": False,
-    "start": 0,
+    "start": 22,
     "end": 7,
     "tz": "Europe/Moscow",
     "text": "Привет! Это помощник rgm, он сейчас не может ответить",
