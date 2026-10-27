@@ -10,7 +10,9 @@ load_dotenv()
 TOKEN = os.environ["BOT_TOKEN"]
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 COOLDOWN = 6 * 3600
-FILE = "settings.json"
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+os.makedirs(DATA_DIR, exist_ok=True)
+FILE = os.path.join(DATA_DIR, "settings.json")
 DEFAULTS = {
     "enabled": True,
     "start": 0,
