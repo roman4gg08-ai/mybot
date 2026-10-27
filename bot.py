@@ -8,7 +8,9 @@ from aiogram.types import Message
 
 load_dotenv()
 TOKEN = os.environ["BOT_TOKEN"]
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_IDS = {
+    int(x) for x in os.getenv("OWNER_ID", "0").replace(" ", "").split(",") if x
+}
 COOLDOWN = 6 * 3600
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -39,7 +41,7 @@ dp = Dispatcher()
 owners, last_reply = {}, {}
 
 def is_owner(m: Message):
-    return OWNER_ID != 0 and m.from_user and m.from_user.id == OWNER_ID
+    return bool(m.from_user) and m.from_user.id in OWNER_IDS
 
 def is_away():
     h = datetime.now(ZoneInfo(S["tz"])).hour
@@ -78,7 +80,7 @@ async def cmd_status(m: Message):
         return
     await m.answer(
         f"Автоответ: {'включён' if S['enabled'] else 'выключен'}\n"
-        f"Уведомления мне: {'включены' if S['notify'] else 'выключены'}\n"
+        f"Уведомления: {'включены' if S['notify'] else 'выключены'}\n"
         f"Часы: {S['start']}:00 — {S['end']}:00 ({S['tz']})\n"
         f"Сейчас {'отвечаю' if is_away() else 'не отвечаю'}\n"
         f"Текст: {S['text']}"
@@ -150,26 +152,28 @@ async def cmd_tz(m: Message, command: CommandObject):
 
 @dp.business_message(F.text)
 async def auto_reply(m: Message):
-    if m.from_user.id == await owner_id(m.business_connection_id):
+    acc = await owner_id(m.business_connection_id)
+    if m.from_user.id == acc:
         return
     if not S["enabled"] or not is_away():
         return
+    key = (m.business_connection_id, m.chat.id)
     now = time.time()
-    if now - last_reply.get(m.chat.id, 0) < COOLDOWN:
+    if now - last_reply.get(key, 0) < COOLDOWN:
         return
-    last_reply[m.chat.id] = now
+    last_reply[key] = now
     await bot.send_message(
         chat_id=m.chat.id,
         text=S["text"],
         business_connection_id=m.business_connection_id,
     )
-    if S["notify"] and OWNER_ID:
+    if S["notify"]:
         try:
             u = m.from_user
             who = u.full_name + (f" (@{u.username})" if u.username else "")
             snippet = m.text if len(m.text) <= 300 else m.text[:300] + "…"
             await bot.send_message(
-                OWNER_ID,
+                acc,
                 f"Тебе написал {who}.\n"
                 f"Я ответил за тебя.\n\n"
                 f"Сообщение: {snippet}",
