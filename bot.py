@@ -19,10 +19,11 @@ AI_LIMIT_PER_HOUR = 8
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 os.makedirs(DATA_DIR, exist_ok=True)
 FILE = os.path.join(DATA_DIR, "settings.json")
+
 DEFAULTS = {
     "enabled": True,
     "notify": True,
-    "ai": False,
+    "ai": True,                # <--- ИСПРАВЛЕНО: включено по умолчанию!
     "start": 0,
     "end": 24,
     "tz": "Europe/Moscow",
@@ -266,7 +267,7 @@ async def auto_reply(m: Message):
                 used_ai = True
                 times.append(now)
             except Exception as e:
-                print("ai error:", e)
+                print("❌ ОШИБКА ИИ:", e)  # Более заметный вывод ошибки в консоль
         ai_times[key] = times
         if reply is None and len(times) >= AI_LIMIT_PER_HOUR:
             return
@@ -294,10 +295,11 @@ async def auto_reply(m: Message):
             )
             await bot.send_message(acc, note[:4000])
         except Exception as e:
-                print("ai error:", e)
+            print("notify error:", e)
 
 async def main():
     print("Bot is running...")
     await dp.start_polling(bot)
 
 asyncio.run(main())
+    
