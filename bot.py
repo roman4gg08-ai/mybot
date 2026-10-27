@@ -15,6 +15,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 FILE = os.path.join(DATA_DIR, "settings.json")
 DEFAULTS = {
     "enabled": True,
+    "notify": True,
     "start": 0,
     "end": 7,
     "tz": "Europe/Moscow",
@@ -65,7 +66,8 @@ async def cmd_help(m: Message):
     await m.answer(
         "/time 0 7 — часы ответа\n"
         "/text Текст — сообщение\n"
-        "/on, /off — включить, выключить\n"
+        "/on, /off — включить, выключить ответы\n"
+        "/notify on, /notify off — уведомления мне\n"
         "/tz Europe/Moscow — часовой пояс\n"
         "/status — настройки"
     )
@@ -76,6 +78,7 @@ async def cmd_status(m: Message):
         return
     await m.answer(
         f"Автоответ: {'включён' if S['enabled'] else 'выключен'}\n"
+        f"Уведомления мне: {'включены' if S['notify'] else 'выключены'}\n"
         f"Часы: {S['start']}:00 — {S['end']}:00 ({S['tz']})\n"
         f"Сейчас {'отвечаю' if is_away() else 'не отвечаю'}\n"
         f"Текст: {S['text']}"
@@ -120,6 +123,18 @@ async def cmd_off(m: Message):
         save()
         await m.answer("Автоответ выключен")
 
+@dp.message(Command("notify"))
+async def cmd_notify(m: Message, command: CommandObject):
+    if not is_owner(m):
+        return
+    arg = (command.args or "").strip().lower()
+    if arg not in ("on", "off"):
+        await m.answer("Формат: /notify on или /notify off")
+        return
+    S["notify"] = arg == "on"
+    save()
+    await m.answer("Уведомления " + ("включены" if S["notify"] else "выключены"))
+
 @dp.message(Command("tz"))
 async def cmd_tz(m: Message, command: CommandObject):
     if not is_owner(m):
@@ -148,6 +163,19 @@ async def auto_reply(m: Message):
         text=S["text"],
         business_connection_id=m.business_connection_id,
     )
+    if S["notify"] and OWNER_ID:
+        try:
+            u = m.from_user
+            who = u.full_name + (f" (@{u.username})" if u.username else "")
+            snippet = m.text if len(m.text) <= 300 else m.text[:300] + "…"
+            await bot.send_message(
+                OWNER_ID,
+                f"Тебе написал {who}.\n"
+                f"Я ответил за тебя.\n\n"
+                f"Сообщение: {snippet}",
+            )
+        except Exception as e:
+            print("notify error:", e)
 
 async def main():
     print("Bot is running...")
