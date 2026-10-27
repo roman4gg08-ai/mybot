@@ -23,8 +23,8 @@ DEFAULTS = {
     "enabled": True,
     "notify": True,
     "ai": False,
-    "start": 22,
-    "end": 7,
+    "start": 0,
+    "end": 24,
     "tz": "Europe/Moscow",
     "text": "Привет! Это помощник rgm, он сейчас не может ответить",
     "prompt": (
@@ -294,7 +294,7 @@ async def auto_reply(m: Message):
             )
             await bot.send_message(acc, note[:4000])
         except Exception as e:
-            print("notify error:", e)
+                print("ai error:", e)
 
 async def main():
     print("Bot is running...")
