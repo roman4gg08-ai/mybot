@@ -13,8 +13,8 @@ OWNER_IDS = {
     int(x) for x in os.getenv("OWNER_ID", "0").replace(" ", "").split(",") if x
 }
 API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL = os.getenv("AI_MODEL", "gemini-1.5-flash")
-COOLDOWN = 5
+MODEL = os.getenv("AI_MODEL", "gemini-3.5-flash")
+COOLDOWN = 600
 AI_LIMIT_PER_HOUR = 8
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -95,33 +95,31 @@ async def ask_ai(key, text):
     del h[:-10]
     while h and h[0]["role"] != "user":
         h.pop(0)
-        
+
     payload = {
         "systemInstruction": {"parts": [{"text": S["prompt"]}]},
         "contents": h,
         "generationConfig": {"maxOutputTokens": 1000},
     }
-    
     url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{MODEL}:generateContent?key={API_KEY}"
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MODEL}:generateContent"
     )
-    
-    headers = {"Content-Type": "application/json"}
+    headers = {"x-goog-api-key": API_KEY, "Content-Type": "application/json"}
     timeout = aiohttp.ClientTimeout(total=40)
-    
+
     async with aiohttp.ClientSession(timeout=timeout) as s:
         async with s.post(url, json=payload, headers=headers) as r:
             data = await r.json()
             if r.status != 200:
-                print("❌ Подробности ошибки от Google API:", data)
-                raise RuntimeError(str(data)[:300])
-                
+                print("Ошибка Google API:", r.status, data)
+                raise RuntimeError(f"HTTP {r.status}: {str(data)[:400]}")
+
     parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
     reply = "".join(p.get("text", "") for p in parts).strip()
     if not reply:
         raise RuntimeError("empty reply: " + str(data)[:300])
-        
+
     h.append({"role": "model", "parts": [{"text": reply}]})
     return reply
 
@@ -138,6 +136,7 @@ async def cmd_help(m: Message):
         "/time 0 24 — часы ответа\n"
         "/text Текст — фиксированное сообщение\n"
         "/ai on, /ai off — умные ответы через ИИ\n"
+        "/aitest — проверить связь с ИИ\n"
         "/prompt Текст — инструкции для ИИ\n"
         "/on, /off — включить, выключить ответы\n"
         "/notify on, /notify off — уведомления мне\n"
@@ -212,6 +211,19 @@ async def cmd_ai(m: Message, command: CommandObject):
     save()
     await m.answer("ИИ " + ("включён" if S["ai"] else "выключен"))
 
+@dp.message(Command("aitest"))
+async def cmd_aitest(m: Message):
+    if not is_owner(m):
+        return
+    if not API_KEY:
+        await m.answer("Нет переменной GEMINI_API_KEY на хостинге")
+        return
+    try:
+        r = await ask_ai(("test", m.chat.id), "Скажи одним словом: привет")
+        await m.answer(f"ИИ работает ({MODEL}): {r}")
+    except Exception as e:
+        await m.answer(f"Ошибка ИИ ({MODEL}):\n{str(e)[:1500]}")
+
 @dp.message(Command("on"))
 async def cmd_on(m: Message):
     if is_owner(m):
@@ -274,7 +286,7 @@ async def auto_reply(m: Message):
                 used_ai = True
                 times.append(now)
             except Exception as e:
-                print("❌ ОШИБКА ИИ:", e)
+                print("ОШИБКА ИИ:", e)
         ai_times[key] = times
         if reply is None and len(times) >= AI_LIMIT_PER_HOUR:
             return
