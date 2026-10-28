@@ -109,4 +109,101 @@ async def cmd_time(m: Message, command: CommandObject):
         return
     try:
         a, b = map(int, command.args.split())
-        assert 0 <= a <= 23 and 0 <= b
+        assert 0 <= a <= 23 and 0 <= b <= 24 and a != b
+    except Exception:
+        await m.answer("Формат: /time 0 7 (часы 0-23, конец 0-24, начало не равно концу)")
+        return
+    S["start"], S["end"] = a, b
+    save()
+    await m.answer(f"Готово: отвечаю с {a}:00 до {b}:00")
+
+@dp.message(Command("text"))
+async def cmd_text(m: Message, command: CommandObject):
+    if not is_owner(m):
+        return
+    if not command.args:
+        await m.answer("Формат: /text Привет! Я скоро отвечу")
+        return
+    S["text"] = command.args.strip()
+    save()
+    await m.answer("Текст обновлён")
+
+@dp.message(Command("on"))
+async def cmd_on(m: Message):
+    if is_owner(m):
+        S["enabled"] = True
+        save()
+        await m.answer("Автоответ включён")
+
+@dp.message(Command("off"))
+async def cmd_off(m: Message):
+    if is_owner(m):
+        S["enabled"] = False
+        save()
+        await m.answer("Автоответ выключен")
+
+@dp.message(Command("notify"))
+async def cmd_notify(m: Message, command: CommandObject):
+    if not is_owner(m):
+        return
+    arg = (command.args or "").strip().lower()
+    if arg not in ("on", "off"):
+        await m.answer("Формат: /notify on или /notify off")
+        return
+    S["notify"] = arg == "on"
+    save()
+    await m.answer("Уведомления " + ("включены" if S["notify"] else "выключены"))
+
+@dp.message(Command("tz"))
+async def cmd_tz(m: Message, command: CommandObject):
+    if not is_owner(m):
+        return
+    try:
+        ZoneInfo(command.args.strip())
+    except Exception:
+        await m.answer("Формат: /tz Europe/Moscow")
+        return
+    S["tz"] = command.args.strip()
+    save()
+    await m.answer(f"Часовой пояс: {S['tz']}")
+
+@dp.business_message()
+async def auto_reply(m: Message):
+    if not m.from_user:
+        return
+    acc = await owner_id(m.business_connection_id)
+    if m.from_user.id == acc:
+        return
+    if not S["enabled"] or not is_away():
+        return
+
+    key = (m.business_connection_id, m.chat.id)
+    now = time.time()
+    if now - last_reply.get(key, 0) < COOLDOWN:
+        return
+    last_reply[key] = now
+
+    await bot.send_message(
+        chat_id=m.chat.id,
+        text=S["text"],
+        business_connection_id=m.business_connection_id,
+    )
+
+    if S["notify"]:
+        try:
+            u = m.from_user
+            who = u.full_name + (f" (@{u.username})" if u.username else "")
+            await bot.send_message(
+                acc,
+                f"Тебе написал {who}.\n"
+                f"Я ответил за тебя.\n\n"
+                f"Сообщение: {describe(m)}",
+            )
+        except Exception as e:
+            print("notify error:", e)
+
+async def main():
+    print("Bot is running...")
+    await dp.start_polling(bot)
+
+asyncio.run(main())
