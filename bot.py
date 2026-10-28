@@ -23,6 +23,7 @@ DEFAULTS = {
     "end": 7,
     "tz": "Europe/Moscow",
     "text": "Привет! Это помощник rgm, он сейчас не может ответить",
+    "muted": [],
 }
 TYPES = {
     "photo": "фото", "voice": "голосовое", "video_note": "кружок",
@@ -46,7 +47,7 @@ def save():
 S = load()
 bot = Bot(TOKEN)
 dp = Dispatcher()
-owners, last_reply = {}, {}
+owners, last_reply, warned = {}, {}, {}
 
 def is_owner(m: Message):
     return bool(m.from_user) and m.from_user.id in OWNER_IDS
@@ -73,6 +74,37 @@ def describe(m: Message):
         return body
     return f"[{TYPES.get(ctype, ctype)}] {body}".strip()
 
+async def delete_msg(conn_id, msg_id):
+    await bot.delete_business_messages(
+        business_connection_id=conn_id, message_ids=[msg_id]
+    )
+
+async def warn_owner(acc, text):
+    now = time.time()
+    if now - warned.get(acc, 0) < 3600:
+        return
+    warned[acc] = now
+    try:
+        await bot.send_message(acc, text)
+    except Exception as e:
+        print("warn error:", e)
+
+async def drop_if_muted(m: Message, acc: int) -> bool:
+    if m.chat.id not in S["muted"]:
+        return False
+    try:
+        await delete_msg(m.business_connection_id, m.message_id)
+    except Exception as e:
+        print("delete error:", e)
+        await warn_owner(
+            acc,
+            "Не удалось удалить сообщение заглушённого собеседника. "
+            "Проверь, что у бота включено право на удаление сообщений "
+            "(Настройки → Telegram для бизнеса → Чат-боты).\n"
+            f"Ошибка: {str(e)[:200]}",
+        )
+    return True
+
 @dp.message(Command("myid"))
 async def cmd_myid(m: Message):
     await m.answer(f"Твой ID: {m.from_user.id}")
@@ -88,6 +120,8 @@ async def cmd_help(m: Message):
         "/on, /off — включить, выключить ответы\n"
         "/notify on, /notify off — уведомления мне\n"
         "/tz Europe/Moscow — часовой пояс\n"
+        "/mute ID, /unmute ID, /mutelist — заглушить, вернуть, список\n"
+        "(в чате с человеком можно написать просто /mute или /unmute)\n"
         "/status — настройки"
     )
 
@@ -100,6 +134,7 @@ async def cmd_status(m: Message):
         f"Уведомления: {'включены' if S['notify'] else 'выключены'}\n"
         f"Часы: {S['start']}:00 — {S['end']}:00 ({S['tz']})\n"
         f"Сейчас {'отвечаю' if is_away() else 'не отвечаю'}\n"
+        f"Заглушено собеседников: {len(S['muted'])}\n"
         f"Текст: {S['text']}"
     )
 
@@ -167,13 +202,86 @@ async def cmd_tz(m: Message, command: CommandObject):
     save()
     await m.answer(f"Часовой пояс: {S['tz']}")
 
-@dp.business_message()
-async def auto_reply(m: Message):
+@dp.message(Command("mute"))
+async def cmd_mute(m: Message, command: CommandObject):
+    if not is_owner(m):
+        return
+    try:
+        uid = int((command.args or "").strip())
+    except Exception:
+        await m.answer("Формат: /mute 123456789 (ID человека из уведомления)")
+        return
+    if uid not in S["muted"]:
+        S["muted"].append(uid)
+        save()
+    await m.answer(f"Заглушен: {uid}")
+
+@dp.message(Command("unmute"))
+async def cmd_unmute(m: Message, command: CommandObject):
+    if not is_owner(m):
+        return
+    try:
+        uid = int((command.args or "").strip())
+    except Exception:
+        await m.answer("Формат: /unmute 123456789")
+        return
+    if uid in S["muted"]:
+        S["muted"].remove(uid)
+        save()
+    await m.answer(f"Больше не заглушён: {uid}")
+
+@dp.message(Command("mutelist"))
+async def cmd_mutelist(m: Message):
+    if not is_owner(m):
+        return
+    if not S["muted"]:
+        await m.answer("Список заглушённых пуст")
+        return
+    await m.answer("Заглушены:\n" + "\n".join(str(x) for x in S["muted"]))
+
+@dp.edited_business_message()
+async def on_edited(m: Message):
     if not m.from_user:
         return
     acc = await owner_id(m.business_connection_id)
-    if m.from_user.id == acc:
+    if m.from_user.id != acc:
+        await drop_if_muted(m, acc)
+
+@dp.business_message()
+async def on_business_message(m: Message):
+    if not m.from_user:
         return
+    acc = await owner_id(m.business_connection_id)
+
+    # сообщения самого владельца: команды /mute и /unmute прямо в чате
+    if m.from_user.id == acc:
+        cmd = (m.text or "").strip().lower()
+        if cmd in ("/mute", "/unmute"):
+            cid = m.chat.id
+            if cmd == "/mute":
+                if cid not in S["muted"]:
+                    S["muted"].append(cid)
+                    save()
+                info = f"Собеседник {cid} заглушён: его сообщения будут удаляться."
+            else:
+                if cid in S["muted"]:
+                    S["muted"].remove(cid)
+                    save()
+                info = f"Собеседник {cid} больше не заглушён."
+            try:
+                await delete_msg(m.business_connection_id, m.message_id)
+            except Exception as e:
+                print("delete cmd error:", e)
+            try:
+                await bot.send_message(acc, info)
+            except Exception as e:
+                print("info error:", e)
+        return
+
+    # заглушённые: удаляем сразу, ответа нет
+    if await drop_if_muted(m, acc):
+        return
+
     if not S["enabled"] or not is_away():
         return
 
@@ -195,7 +303,7 @@ async def auto_reply(m: Message):
             who = u.full_name + (f" (@{u.username})" if u.username else "")
             await bot.send_message(
                 acc,
-                f"Тебе написал {who}.\n"
+                f"Тебе написал {who}, ID {u.id}.\n"
                 f"Я ответил за тебя.\n\n"
                 f"Сообщение: {describe(m)}",
             )
