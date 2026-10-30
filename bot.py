@@ -24,8 +24,7 @@ DEFAULTS = {
     "tz": "Europe/Moscow",
     "text": "Привет! Это помощник rgm, он сейчас не может ответить",
     "muted": [],
-    "gmuted_ids": [],
-    "gmuted_names": [],
+    "gmuted": [],
 }
 TYPES = {
     "photo": "фото", "voice": "голосовое", "video_note": "кружок",
@@ -44,8 +43,13 @@ def load():
             data = {**DEFAULTS, **json.load(f)}
     except Exception:
         data = dict(DEFAULTS)
-    for k in ("muted", "gmuted_ids", "gmuted_names"):
-        data[k] = list(data.get(k, []))
+    data["muted"] = list(data.get("muted", []))
+    data["gmuted"] = list(data.get("gmuted", []))
+    # перенос со старого формата (отдельные списки ID и ников)
+    for uid in data.pop("gmuted_ids", []):
+        data["gmuted"].append({"id": uid, "name": None})
+    for nm in data.pop("gmuted_names", []):
+        data["gmuted"].append({"id": None, "name": nm})
     return data
 
 def save():
@@ -119,16 +123,27 @@ async def drop_if_muted(m: Message, acc: int) -> bool:
 
 # ---------- группы: заглушённые пользователи ----------
 
+def rec_matches(r, uid, name):
+    return bool(
+        (uid and r.get("id") == uid) or (name and r.get("name") == name)
+    )
+
 def gmuted_match(u) -> bool:
     if not u:
         return False
-    if u.id in S["gmuted_ids"]:
-        return True
-    name = (u.username or "").lower()
-    if name and name in S["gmuted_names"]:
-        S["gmuted_ids"].append(u.id)  # запоминаем ID на случай смены ника
-        save()
-        return True
+    name = (u.username or "").lower() or None
+    for r in S["gmuted"]:
+        if rec_matches(r, u.id, name):
+            changed = False
+            if r.get("id") != u.id:
+                r["id"] = u.id
+                changed = True
+            if name and r.get("name") != name:
+                r["name"] = name
+                changed = True
+            if changed:
+                save()
+            return True
     return False
 
 def resolve_target(m: Message, command: CommandObject):
@@ -143,20 +158,31 @@ def resolve_target(m: Message, command: CommandObject):
     return None
 
 def set_gmute(uid, name, on):
+    recs = S["gmuted"]
     if on:
-        if uid and uid not in S["gmuted_ids"]:
-            S["gmuted_ids"].append(uid)
-        if name and name not in S["gmuted_names"]:
-            S["gmuted_names"].append(name)
+        for r in recs:
+            if rec_matches(r, uid, name):
+                if uid:
+                    r["id"] = uid
+                if name:
+                    r["name"] = name
+                break
+        else:
+            recs.append({"id": uid, "name": name})
     else:
-        if uid and uid in S["gmuted_ids"]:
-            S["gmuted_ids"].remove(uid)
-        if name and name in S["gmuted_names"]:
-            S["gmuted_names"].remove(name)
+        S["gmuted"] = [r for r in recs if not rec_matches(r, uid, name)]
     save()
 
 def who_label(uid, name):
     return f"@{name}" if name else str(uid)
+
+def rec_label(r):
+    parts = []
+    if r.get("name"):
+        parts.append(f"@{r['name']}")
+    if r.get("id"):
+        parts.append(f"ID {r['id']}")
+    return " ".join(parts) or "?"
 
 async def group_cmd(m: Message, command: CommandObject, on: bool):
     if not is_owner(m):
@@ -230,7 +256,7 @@ async def cmd_help(m: Message):
         "(в чате с человеком можно написать просто /mute или /unmute)\n"
         "ГРУППЫ (бот — админ с правом удаления):\n"
         "в группе: ответ на сообщение + /mute или /mute @username, /unmute\n"
-        "/gmute @username или ID, /gunmute, /gmutelist — то же из личных\n"
+        "/gmute @username или ID, /gunmute @username или ID или all, /gmutelist\n"
         "/status — настройки"
     )
 
@@ -244,7 +270,7 @@ async def cmd_status(m: Message):
         f"Часы: {S['start']}:00 — {S['end']}:00 ({S['tz']})\n"
         f"Сейчас {'отвечаю' if is_away() else 'не отвечаю'}\n"
         f"Заглушено в личных: {len(S['muted'])}\n"
-        f"Заглушено в группах: {len(set(S['gmuted_ids']) | set(S['gmuted_names']))}\n"
+        f"Заглушено в группах: {len(S['gmuted'])}\n"
         f"Текст: {S['text']}"
     )
 
@@ -368,23 +394,37 @@ async def cmd_gmute(m: Message, command: CommandObject):
 async def cmd_gunmute(m: Message, command: CommandObject):
     if not is_owner(m):
         return
+    if (command.args or "").strip().lower() == "all":
+        S["gmuted"] = []
+        save()
+        await m.answer("Со всех снята заглушка в группах")
+        return
     t = resolve_target(m, command)
     if not t:
-        await m.answer("Формат: /gunmute @username или /gunmute 123456789")
+        await m.answer("Формат: /gunmute @username, /gunmute 123456789 или /gunmute all")
         return
     uid, name = t
+    before = len(S["gmuted"])
     set_gmute(uid, name, False)
-    await m.answer(f"Больше не заглушён в группах: {who_label(uid, name)}")
+    removed = before - len(S["gmuted"])
+    if removed:
+        await m.answer(f"Больше не заглушён в группах: {who_label(uid, name)}")
+    else:
+        await m.answer(
+            f"{who_label(uid, name)} в списке не найден. "
+            "Посмотри /gmutelist (можно снять по ID или командой /gunmute all)"
+        )
 
 @dp.message(Command("gmutelist"), PRIV)
 async def cmd_gmutelist(m: Message):
     if not is_owner(m):
         return
-    items = [str(x) for x in S["gmuted_ids"]] + [f"@{x}" for x in S["gmuted_names"]]
-    if not items:
+    if not S["gmuted"]:
         await m.answer("В группах заглушённых нет")
         return
-    await m.answer("Заглушены в группах:\n" + "\n".join(items))
+    await m.answer(
+        "Заглушены в группах:\n" + "\n".join(rec_label(r) for r in S["gmuted"])
+    )
 
 # ---------- сообщения в группах (удаление заглушённых) ----------
 
