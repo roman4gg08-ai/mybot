@@ -1,4 +1,4 @@
-import asyncio, json, os, time
+import asyncio, json, os, random, re, time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -11,10 +11,26 @@ TOKEN = os.environ["BOT_TOKEN"]
 OWNER_IDS = {
     int(x) for x in os.getenv("OWNER_ID", "0").replace(" ", "").split(",") if x
 }
-COOLDOWN = 6 * 3600  # не чаще раза в 6 часов на один чат
+COOLDOWN = 6 * 3600   # обычный текст: не чаще раза в 6 часов на чат
+FLOOD_LIMIT = 6       # ответов по правилам: не больше стольких в час на чат
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 os.makedirs(DATA_DIR, exist_ok=True)
 FILE = os.path.join(DATA_DIR, "settings.json")
+
+DEFAULT_RULES = [
+    {
+        "keys": ["ты где", "где ты", "где находишься"],
+        "replies": ["Занят", "На работе", "На учёбе"],
+    },
+    {
+        "keys": ["как дела", "как жизнь", "как сам", "че как"],
+        "replies": ["Норм, но не могу ответить"],
+    },
+    {
+        "keys": ["чем занят", "что делаешь"],
+        "replies": ["Занят, отвечу позже"],
+    },
+]
 
 DEFAULTS = {
     "enabled": True,
@@ -37,14 +53,20 @@ TYPES = {
 PRIV = F.chat.type == "private"
 GRP = F.chat.type.in_({"group", "supergroup"})
 
+def copy_rules(rules):
+    return json.loads(json.dumps(rules, ensure_ascii=False))
+
 def load():
     try:
         with open(FILE, encoding="utf-8") as f:
-            data = {**DEFAULTS, **json.load(f)}
+            saved = json.load(f)
     except Exception:
-        data = dict(DEFAULTS)
+        saved = {}
+    data = {**DEFAULTS, **saved}
     data["muted"] = list(data.get("muted", []))
     data["gmuted"] = list(data.get("gmuted", []))
+    rules = saved.get("rules")
+    data["rules"] = copy_rules(rules if isinstance(rules, list) else DEFAULT_RULES)
     # перенос со старого формата (отдельные списки ID и ников)
     for uid in data.pop("gmuted_ids", []):
         data["gmuted"].append({"id": uid, "name": None})
@@ -59,7 +81,7 @@ def save():
 S = load()
 bot = Bot(TOKEN)
 dp = Dispatcher()
-owners, last_reply, warned = {}, {}, {}
+owners, last_reply, flood, warned = {}, {}, {}, {}
 
 def is_owner(m: Message):
     return bool(m.from_user) and m.from_user.id in OWNER_IDS
@@ -85,6 +107,25 @@ def describe(m: Message):
     if ctype == "text":
         return body
     return f"[{TYPES.get(ctype, ctype)}] {body}".strip()
+
+# ---------- правила ответов ----------
+
+def norm(s):
+    s = (s or "").lower().replace("ё", "е")
+    s = re.sub(r"[^\w\s]", " ", s)
+    return " ".join(s.split())
+
+def match_rule(text):
+    t = f" {norm(text)} "
+    for r in S["rules"]:
+        for k in r.get("keys", []):
+            k = norm(k)
+            if k and f" {k} " in t:
+                return random.choice(r["replies"])
+    return None
+
+def rule_line(i, r):
+    return f"{i}. {', '.join(r['keys'])} → {' | '.join(r['replies'])}"
 
 async def warn_owner(acc, text, key=None):
     k = (acc, key)
@@ -248,7 +289,10 @@ async def cmd_help(m: Message):
         return
     await m.answer(
         "/time 0 7 — часы ответа\n"
-        "/text Текст — сообщение\n"
+        "/text Текст — обычное сообщение (на «привет», голосовые, кружки)\n"
+        "/rules — правила ответов по словам\n"
+        "/rule add слово1, слово2 = ответ1 | ответ2\n"
+        "/rule del 2, /rule reset\n"
         "/on, /off — включить, выключить ответы\n"
         "/notify on, /notify off — уведомления мне\n"
         "/tz Europe/Moscow — часовой пояс\n"
@@ -269,6 +313,7 @@ async def cmd_status(m: Message):
         f"Уведомления: {'включены' if S['notify'] else 'выключены'}\n"
         f"Часы: {S['start']}:00 — {S['end']}:00 ({S['tz']})\n"
         f"Сейчас {'отвечаю' if is_away() else 'не отвечаю'}\n"
+        f"Правил ответов: {len(S['rules'])}\n"
         f"Заглушено в личных: {len(S['muted'])}\n"
         f"Заглушено в группах: {len(S['gmuted'])}\n"
         f"Текст: {S['text']}"
@@ -298,6 +343,59 @@ async def cmd_text(m: Message, command: CommandObject):
     S["text"] = command.args.strip()
     save()
     await m.answer("Текст обновлён")
+
+@dp.message(Command("rules"), PRIV)
+async def cmd_rules(m: Message):
+    if not is_owner(m):
+        return
+    if not S["rules"]:
+        await m.answer(
+            "Правил нет. Добавь: /rule add слово1, слово2 = ответ1 | ответ2"
+        )
+        return
+    await m.answer(
+        "Правила (если ответов несколько, выбирается случайный):\n\n"
+        + "\n".join(rule_line(i, r) for i, r in enumerate(S["rules"], 1))
+    )
+
+@dp.message(Command("rule"), PRIV)
+async def cmd_rule(m: Message, command: CommandObject):
+    if not is_owner(m):
+        return
+    usage = (
+        "Формат:\n"
+        "/rule add слово1, слово2 = ответ1 | ответ2\n"
+        "/rule del 2\n"
+        "/rule reset"
+    )
+    sub, _, rest = (command.args or "").strip().partition(" ")
+    sub, rest = sub.lower(), rest.strip()
+    if sub == "add":
+        k, sep, r = rest.partition("=")
+        keys = [norm(x) for x in k.split(",") if norm(x)]
+        replies = [x.strip() for x in r.split("|") if x.strip()]
+        if not sep or not keys or not replies:
+            await m.answer(usage)
+            return
+        S["rules"].append({"keys": keys, "replies": replies})
+        save()
+        await m.answer(f"Добавлено правило №{len(S['rules'])}")
+    elif sub == "del":
+        try:
+            i = int(rest)
+            assert 1 <= i <= len(S["rules"])
+        except Exception:
+            await m.answer("Укажи номер из /rules, например: /rule del 2")
+            return
+        S["rules"].pop(i - 1)
+        save()
+        await m.answer(f"Правило №{i} удалено")
+    elif sub == "reset":
+        S["rules"] = copy_rules(DEFAULT_RULES)
+        save()
+        await m.answer("Правила возвращены к стандартным")
+    else:
+        await m.answer(usage)
 
 @dp.message(Command("on"), PRIV)
 async def cmd_on(m: Message):
@@ -477,6 +575,10 @@ async def on_business_message(m: Message):
                 print("info error:", e)
         return
 
+    # боты не получают автоответов (чтобы не было перепалки)
+    if m.from_user.is_bot:
+        return
+
     # заглушённые: удаляем сразу, ответа нет
     if await drop_if_muted(m, acc):
         return
@@ -486,13 +588,25 @@ async def on_business_message(m: Message):
 
     key = (m.business_connection_id, m.chat.id)
     now = time.time()
-    if now - last_reply.get(key, 0) < COOLDOWN:
-        return
-    last_reply[key] = now
+    text_in = m.text or m.caption
+    rule_reply = match_rule(text_in) if text_in else None
+
+    if rule_reply:
+        times = [t for t in flood.get(key, []) if now - t < 3600]
+        if len(times) >= FLOOD_LIMIT:
+            return
+        times.append(now)
+        flood[key] = times
+        reply = rule_reply
+    else:
+        if now - last_reply.get(key, 0) < COOLDOWN:
+            return
+        last_reply[key] = now
+        reply = S["text"]
 
     await bot.send_message(
         chat_id=m.chat.id,
-        text=S["text"],
+        text=reply,
         business_connection_id=m.business_connection_id,
     )
 
@@ -502,9 +616,9 @@ async def on_business_message(m: Message):
             who = u.full_name + (f" (@{u.username})" if u.username else "")
             await bot.send_message(
                 acc,
-                f"Тебе написал {who}, ID {u.id}.\n"
-                f"Я ответил за тебя.\n\n"
-                f"Сообщение: {describe(m)}",
+                f"Тебе написал {who}, ID {u.id}.\n\n"
+                f"Сообщение: {describe(m)}\n\n"
+                f"Я ответил: {reply}",
             )
         except Exception as e:
             print("notify error:", e)
